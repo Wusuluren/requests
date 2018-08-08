@@ -7,8 +7,10 @@ import (
 	"github.com/wusuluren/requests/py"
 	"io"
 	"io/ioutil"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -32,17 +34,14 @@ const (
 type Request struct {
 	*http.Request
 
-	method string
-	url    string
-	params py.Dict
-	//data           io.Reader
-	data io.ReadCloser
-	//json           []byte
-	json    interface{}
-	headers map[string]string
-	cookies CookieJar
-	//files          io.Reader
-	files          io.ReadCloser
+	method         string
+	url            string
+	params         py.Dict
+	data           io.ReadCloser
+	json           interface{}
+	headers        map[string]string
+	cookies        CookieJar
+	files          map[string]string
 	auth           []string
 	timeout        time.Duration //float64
 	allowRedirects bool
@@ -81,13 +80,13 @@ func (r *PreparedRequest) prepare(dftargs py.Dict) {
 	method := dftargs.Get("method", "").(string)
 	Url := dftargs.Get("url", "").(string)
 	headers := dftargs.Get("headers", make(map[string]string)).(map[string]string)
-	files := dftargs.Get("files", io.ReadCloser(nil)).(io.ReadCloser)
+	files := dftargs.Get("files", make(map[string]string)).(map[string]string)
 	data := dftargs.Get("data", io.ReadCloser(nil)).(io.ReadCloser)
 	params := dftargs.Get("params", py.Dict{}).(py.Dict)
 	auth := dftargs.Get("auth", make([]string, 0)).([]string)
 	cookies := dftargs.Get("cookies", CookieJar{}).(CookieJar)
 	hooks := dftargs.Get("hooks", make(map[string][]hookFunc)).(map[string][]hookFunc)
-	json := dftargs.Get("json", 0).(interface{})
+	json := dftargs.Get("json", nil)
 
 	r.prepareMethod(method)
 	r.prepareUrl(Url, params)
@@ -151,12 +150,12 @@ func (r *PreparedRequest) prepareHeaders(headers map[string]string) {
 		r.headers[key] = val
 	}
 }
-func (r *PreparedRequest) prepareBody(data io.ReadCloser, files io.ReadCloser, Json interface{}) {
+func (r *PreparedRequest) prepareBody(data io.ReadCloser, files map[string]string, Json interface{}) {
 	var err error
 	var body []byte
 	var contentType string
 
-	if data == ioutil.NopCloser(nil) && Json != 0 {
+	if data == ioutil.NopCloser(nil) && Json != nil {
 		contentType = "application/json"
 		body, err = json.Marshal(Json)
 		if err != nil {
@@ -179,8 +178,10 @@ func (r *PreparedRequest) prepareBody(data io.ReadCloser, files io.ReadCloser, J
 
 	length := superLen(data)
 
+	var w *multipart.Writer
+	var multipart bytes.Buffer
 	if isStream {
-		if files != nil {
+		if len(files) > 0 {
 			panic("Streamed bodies and files are mutually exclusive.")
 		}
 
@@ -190,8 +191,8 @@ func (r *PreparedRequest) prepareBody(data io.ReadCloser, files io.ReadCloser, J
 			r.headers["Transfer-Encoding"] = "chunked"
 		}
 	} else {
-		if files != ioutil.NopCloser(nil) {
-			body, err = ioutil.ReadAll(files)
+		if len(files) > 0 {
+			w, multipart, err = r.createMultiPart(files)
 			if err != nil {
 				panic(err)
 			}
@@ -214,13 +215,49 @@ func (r *PreparedRequest) prepareBody(data io.ReadCloser, files io.ReadCloser, J
 		}
 	}
 
-	r.Request.Request, err = http.NewRequest(r.method, r.url, bytes.NewReader(body))
-	if err != nil {
-		panic(err)
+	if len(files) > 0 {
+		r.Request.Request, err = http.NewRequest(r.method, r.url, &multipart)
+		if err != nil {
+			panic(err)
+		}
+		r.Request.Request.Header.Set("Content-Type", w.FormDataContentType())
+		w.Close()
+	} else {
+		r.Request.Request, err = http.NewRequest(r.method, r.url, bytes.NewBuffer(body))
+		if err != nil {
+			panic(err)
+		}
 	}
-	//b, _ :=ioutil.ReadAll(r.Request.Body)
-	//fmt.Println("222 ", string(b))
+	//b, err :=ioutil.ReadAll(r.Request.Request.Body)
+	//fmt.Println("222 ", err,  string(b), len(b))
 }
+
+func (r *PreparedRequest) createMultiPart(files map[string]string) (w *multipart.Writer, b bytes.Buffer, err error) {
+	var fw io.Writer
+	w = multipart.NewWriter(&b)
+	for fieldname, filename := range files {
+		f, err := os.Open(filename)
+		if err != nil {
+			return w, b, err
+		}
+		fw, err = w.CreateFormFile(fieldname, filename)
+		if err != nil {
+			return w, b, err
+		}
+		_, err = io.Copy(fw, f)
+		if err != nil {
+			return w, b, err
+		}
+		fw, err = w.CreateFormField(filename)
+		if err != nil {
+			return w, b, err
+		}
+		f.Close()
+		break
+	}
+	return w, b, err
+}
+
 func (r *PreparedRequest) prepareContentLength(body []byte) {
 	if body != nil {
 		length := len(body)

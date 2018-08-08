@@ -199,7 +199,7 @@ func (s *session) request(method, Url string, dftargs py.Dict) *Response {
 	data := dftargs.Get("data", io.ReadCloser(ioutil.NopCloser(nil))).(io.ReadCloser)
 	headers := dftargs.Get("headers", make(map[string]string)).(map[string]string)
 	cookies := dftargs.Get("cookies", CookieJar{}).(CookieJar)
-	files := dftargs.Get("files", io.ReadCloser(ioutil.NopCloser(nil))).(io.ReadCloser)
+	files := dftargs.Get("files", make(map[string]string)).(map[string]string)
 	auth := dftargs.Get("auth", make([]string, 0)).([]string)
 	timeout := dftargs.Get("timeout", time.Duration(0)).(time.Duration)
 	allowRedirects := dftargs.Get("allowRedirects", true).(bool)
@@ -208,7 +208,7 @@ func (s *session) request(method, Url string, dftargs py.Dict) *Response {
 	stream := dftargs.Get("stream", false).(bool)
 	verify := dftargs.Get("verify", "").(string)
 	cert := dftargs.Get("cert", make([]string, 0)).([]string)
-	json := dftargs.Get("json", 0).(interface{})
+	json := dftargs.Get("json", nil)
 
 	req := &Request{
 		Request: &http.Request{},
